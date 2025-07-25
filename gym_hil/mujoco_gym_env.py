@@ -229,7 +229,13 @@ class FrankaGymEnv(MujocoGymEnv):
 
     def apply_action(self, action):
         """Apply the action to the robot."""
-        x, y, z, rx, ry, rz, grasp_command = action
+        if len(action) == 7:
+            x, y, z, rx, ry, rz, grasp_command = action
+        elif len(action) == 4:
+            x, y, z, grasp_command = action
+            rx, ry, rz = 0, 0, 0
+        else:
+            raise ValueError(f"Action length must be 4 or 7, not {len(action)}")
 
         # Set the mocap position
         pos = self._data.mocap_pos[0].copy()
@@ -238,9 +244,14 @@ class FrankaGymEnv(MujocoGymEnv):
         self._data.mocap_pos[0] = npos
 
         # Set gripper grasp
-        g = self._data.ctrl[self._gripper_ctrl_id] / MAX_GRIPPER_COMMAND
-        ng = np.clip(g + grasp_command, 0.0, 1.0)
-        self._data.ctrl[self._gripper_ctrl_id] = ng * MAX_GRIPPER_COMMAND
+        # The grasp_command is an absolute state: 0.0 for close, 1.0 for hold, 2.0 for open.
+        if grasp_command == 0.0:  # Close command
+            # The Robotiq gripper controller expects a value from 0 to 255.
+            # We send a high value to close the gripper.
+            self._data.ctrl[self._gripper_ctrl_id] = 255.0
+        elif grasp_command == 2.0:  # Open command
+            self._data.ctrl[self._gripper_ctrl_id] = 0.0
+        # If grasp_command is 1.0 (hold), we do nothing, maintaining the current state.
 
         # Apply operational space control
         for _ in range(self._n_substeps):

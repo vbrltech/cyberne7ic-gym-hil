@@ -124,8 +124,14 @@ class PandaPickCubeGymEnv(FrankaGymEnv):
         obs = self._compute_observation()
         return obs, {}
 
-    def step(self, action: np.ndarray) -> Tuple[Dict[str, np.ndarray], float, bool, bool, Dict[str, Any]]:
+    def step(
+        self, action: np.ndarray, gamepad_state: Dict[str, Any] = None
+    ) -> Tuple[Dict[str, np.ndarray], float, bool, bool, Dict[str, Any]]:
         """Take a step in the environment."""
+        # If gamepad_state is provided, prioritize it over the agent's action.
+        if gamepad_state:
+            action = self._gamepad_state_to_action(gamepad_state)
+
         # Apply the action to the robot
         self.apply_action(action)
 
@@ -196,6 +202,56 @@ class PandaPickCubeGymEnv(FrankaGymEnv):
         dist = np.linalg.norm(block_pos - tcp_pos)
         lift = block_pos[2] - self._z_init
         return dist < 0.05 and lift > 0.1
+
+    def _gamepad_state_to_action(self, gamepad_state: Dict[str, Any]) -> np.ndarray:
+        """Translate a gamepad state dictionary into a 7D action vector."""
+        # Default action is to do nothing
+        action = np.zeros(7, dtype=np.float32)
+
+        # Safety check for axes and buttons
+        if "axes" not in gamepad_state or "buttons" not in gamepad_state:
+            return action
+
+        axes = gamepad_state["axes"]
+        buttons = gamepad_state["buttons"]
+
+        # Scale for end-effector movement from joystick axes
+        action_scale = 0.05  # Reduced from 0.1 for finer control
+
+        # Mapping axes to actions:
+        # - Gamepad axes can have inverted Y-axes, which we correct for.
+        # - Keyboard sends non-inverted values.
+        input_method = gamepad_state.get("input_method", "gamepad")  # Default to gamepad
+
+        if len(axes) >= 4:
+            # Determine inversion factor based on input method
+            y_inversion = -1.0 if input_method == "gamepad" else 1.0
+            z_inversion = -1.0 if input_method == "gamepad" else 1.0
+
+            # Apply mapping
+            # action[0] is x-axis (A/D, Left Stick X)
+            action[0] = axes[0] * action_scale
+            # action[1] is y-axis (W/S, Left Stick Y)
+            action[1] = axes[1] * y_inversion * action_scale
+            # action[2] is z-axis (Q/E, Right Stick Y)
+            action[2] = axes[3] * z_inversion * action_scale
+
+        # Gripper control from bumpers
+        # 0.0=close, 1.0=hold, 2.0=open -> mapped from buttons
+        if len(buttons) >= 6:
+            right_bumper = buttons[5]
+            left_bumper = buttons[4]
+
+            if right_bumper > 0.5:
+                action[6] = 2.0  # Open gripper
+            elif left_bumper > 0.5:
+                action[6] = 0.0  # Close gripper
+            else:
+                action[6] = 1.0  # Hold position
+        else:
+            action[6] = 1.0 # Default hold
+
+        return action
 
 
 if __name__ == "__main__":

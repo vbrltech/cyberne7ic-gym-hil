@@ -6,13 +6,6 @@ import gymnasium as gym
 
 from gym_hil.envs.panda_arrange_boxes_gym_env import PandaArrangeBoxesGymEnv
 from gym_hil.envs.panda_pick_gym_env import PandaPickCubeGymEnv
-from gym_hil.wrappers.hil_wrappers import (
-    DEFAULT_EE_STEP_SIZE,
-    EEActionWrapper,
-    GripperPenaltyWrapper,
-    InputsControlWrapper,
-    ResetDelayWrapper,
-)
 from gym_hil.wrappers.viewer_wrapper import PassiveViewerWrapper
 
 
@@ -51,32 +44,10 @@ def wrap_env(
     Returns:
         The wrapped environment
     """
-
-    if use_gripper:
-        env = GripperPenaltyWrapper(env, penalty=gripper_penalty)
-
-    if not ee_step_size:
-        ee_step_size = DEFAULT_EE_STEP_SIZE
-    env = EEActionWrapper(env, ee_action_step_size=ee_step_size, use_gripper=True)
-
-    # Apply control wrappers last
-    env = InputsControlWrapper(
-        env,
-        x_step_size=1.0,
-        y_step_size=1.0,
-        z_step_size=1.0,
-        use_gripper=use_gripper,
-        auto_reset=auto_reset,
-        use_gamepad=use_gamepad,
-        controller_config_path=controller_config_path,
-    )
-
-    # Apply wrappers in the correct order
+    # The wrappers that were here have been removed as they are no longer needed.
+    # The environment now handles gamepad input programmatically.
     if use_viewer:
         env = PassiveViewerWrapper(env, show_left_ui=show_ui, show_right_ui=show_ui)
-
-    # Apply time delay wrapper
-    env = ResetDelayWrapper(env, delay_seconds=reset_delay_seconds)
 
     return env
 
