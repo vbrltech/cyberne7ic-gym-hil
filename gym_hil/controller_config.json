@@ -1,146 +1,37 @@
 {
-  "default": {
-    "axes": {
-      "left_x": 0,
-      "left_y": 1,
-      "right_x": 2,
-      "right_y": 3
-    },
-    "buttons": {
-      "a": 0,
-      "b": 1,
-      "x": 2,
-      "y": 3,
-      "lb": 4,
-      "rb": 5,
-      "lt": 6,
-      "rt": 7
-    },
-    "axis_inversion": {
-      "left_x": false,
-      "left_y": true,
-      "right_x": false,
-      "right_y": true
-    }
-  },
-  "Xbox 360 Controller": {
-    "axes": {
-      "left_x": 0,
-      "left_y": 1,
-      "right_x": 3,
-      "right_y": 4
-    },
-    "buttons": {
-      "a": 0,
-      "b": 1,
-      "x": 2,
-      "y": 3,
-      "lb": 4,
-      "rb": 5,
-      "lt": 9,
-      "rt": 10
-    },
-    "axis_inversion": {
-      "left_x": true,
-      "left_y": true,
-      "right_x": true,
-      "right_y": true
-    }
-  },
-  "PS4 Controller": {
-    "axes": {
-      "left_x": 0,
-      "left_y": 1,
-      "right_x": 2,
-      "right_y": 5
-    },
-    "buttons": {
-      "a": 0,
-      "b": 1,
-      "x": 3,
-      "y": 2,
-      "lb": 4,
-      "rb": 5,
-      "lt": 6,
-      "rt": 7
-    },
-    "axis_inversion": {
-      "left_x": false,
-      "left_y": true,
-      "right_x": false,
-      "right_y": true
-    }
-  },
-  "Logitech Gamepad F310": {
-    "axes": {
-      "left_x": 0,
-      "left_y": 1,
-      "right_x": 2,
-      "right_y": 3
-    },
-    "buttons": {
-      "a": 0,
-      "b": 1,
-      "x": 2,
-      "y": 3,
-      "lb": 4,
-      "rb": 5,
-      "lt": 6,
-      "rt": 7
-    },
-    "axis_inversion": {
-      "left_x": false,
-      "left_y": true,
-      "right_x": false,
-      "right_y": true
-    }
-  },
-  "Logitech Wireless Gamepad F710": {
-    "axes": {
-      "left_x": 0,
-      "left_y": 1,
-      "right_x": 2,
-      "right_y": 3
-    },
-    "buttons": {
-      "a": 0,
-      "b": 1,
-      "x": 2,
-      "y": 3,
-      "lb": 4,
-      "rb": 5,
-      "lt": 6,
-      "rt": 7
-    },
-    "axis_inversion": {
-      "left_x": false,
-      "left_y": true,
-      "right_x": false,
-      "right_y": true
-    }
-  },
-  "Logitech Cordless RumblePad 2": {
-    "axes": {
-      "left_x": 0,
-      "left_y": 1,
-      "right_x": 2,
-      "right_y": 3
-    },
-    "buttons": {
-      "a": 1,
-      "b": 2,
-      "x": 0,
-      "y": 3,
-      "lb": 4,
-      "rb": 5,
-      "lt": 6,
-      "rt": 7
-    },
-    "axis_inversion": {
-      "left_x": true,
-      "left_y": true,
-      "right_x": false,
-      "right_y": true
+  "schema_version": "1.0",
+  "configurations": {
+    "default_panda_pick": {
+      "name": "Default Panda Picking",
+      "description": "Standard camera-relative controls for the Panda pick-and-place task.",
+      "sensitivity": {
+        "gamepad": 0.05,
+        "keyboard": 0.08
+      },
+      "camera_relative": true,
+      "mappings": {
+        "gamepad": {
+          "x_axis": { "input": "axis", "index": 0, "inverted": false },
+          "y_axis": { "input": "axis", "index": 1, "inverted": true },
+          "z_axis": { "input": "axis", "index": 3, "inverted": true },
+          "gripper_open": { "input": "button", "index": 5 },
+          "gripper_close": { "input": "button", "index": 4 }
+        },
+        "keyboard": {
+          "x_axis_pos": { "key": "KeyD" },
+          "x_axis_neg": { "key": "KeyA" },
+          "y_axis_pos": { "key": "KeyW" },
+          "y_axis_neg": { "key": "KeyS" },
+          "z_axis_pos": { "key": "KeyQ" },
+          "z_axis_neg": { "key": "KeyE" },
+          "gripper_open": { "key": "Space" },
+          "gripper_close": { "key": "ShiftLeft" },
+          "success": { "key": "Enter" },
+          "fail": { "key": "Escape" },
+          "freeze": { "key": "Tab" },
+          "exit": { "key": "KeyF" }
+        }
+      }
     }
   }
 }

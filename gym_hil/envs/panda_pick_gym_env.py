@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+from pathlib import Path
 from typing import Any, Dict, Literal, Tuple
 
 import mujoco
@@ -42,6 +44,11 @@ class PandaPickCubeGymEnv(FrankaGymEnv):
         random_block_position: bool = False,
     ):
         self.reward_type = reward_type
+
+        # Load control configuration
+        config_path = Path(__file__).parent.parent / "controller_config.json"
+        with open(config_path) as f:
+            self.control_config = json.load(f)
 
         super().__init__(
             seed=seed,
@@ -130,7 +137,10 @@ class PandaPickCubeGymEnv(FrankaGymEnv):
         """Take a step in the environment."""
         # If gamepad_state is provided, prioritize it over the agent's action.
         if gamepad_state:
-            action = self._gamepad_state_to_action(gamepad_state)
+            if gamepad_state.get("input_method") == "keyboard":
+                action = self._keyboard_state_to_action(gamepad_state)
+            else:
+                action = self._gamepad_state_to_action(gamepad_state)
 
         # Apply the action to the robot
         self.apply_action(action)
@@ -204,52 +214,127 @@ class PandaPickCubeGymEnv(FrankaGymEnv):
         return dist < 0.05 and lift > 0.1
 
     def _gamepad_state_to_action(self, gamepad_state: Dict[str, Any]) -> np.ndarray:
-        """Translate a gamepad state dictionary into a 7D action vector."""
-        # Default action is to do nothing
+        """Translate a gamepad state dictionary into a 7D action vector using the loaded configuration."""
         action = np.zeros(7, dtype=np.float32)
 
-        # Safety check for axes and buttons
         if "axes" not in gamepad_state or "buttons" not in gamepad_state:
             return action
 
-        axes = gamepad_state["axes"]
-        buttons = gamepad_state["buttons"]
+        input_method = gamepad_state.get("input_method", "gamepad")
+        
+        # Gracefully handle the 'switch' event by returning a neutral action
+        if input_method == 'switch':
+            return action
 
-        # Scale for end-effector movement from joystick axes
-        action_scale = 0.05  # Reduced from 0.1 for finer control
+        config = self.control_config["configurations"]["default_panda_pick"]
+        mappings = config["mappings"][input_method]
+        # Use sensitivity from gamepad_state if available, otherwise use config default
+        sensitivity = gamepad_state.get("sensitivity", config["sensitivity"][input_method])
 
-        # Mapping axes to actions:
-        # - Gamepad axes can have inverted Y-axes, which we correct for.
-        # - Keyboard sends non-inverted values.
-        input_method = gamepad_state.get("input_method", "gamepad")  # Default to gamepad
+        # Get camera matrix for camera-relative control
+        cam_id = self._model.camera("front").id
+        cam_mat = self._data.cam_xmat[cam_id].reshape(3, 3)
+        
+        # Z-axis is the negative third column (camera looks along -Z)
+        forward_vec = -cam_mat[:, 2]
+        # Y-axis is the second column
+        up_vec = cam_mat[:, 1]
+        # X-axis is the first column
+        right_vec = cam_mat[:, 0]
 
-        if len(axes) >= 4:
-            # Determine inversion factor based on input method
-            y_inversion = -1.0 if input_method == "gamepad" else 1.0
-            z_inversion = -1.0 if input_method == "gamepad" else 1.0
+        # Movement vectors based on user input, scaled by sensitivity
+        # These are now deltas in the world frame, but aligned with the camera
+        move_vec = np.zeros(3)
+        
+        # Y-axis movement (Forward/Backward)
+        y_input = 0
+        if input_method == "gamepad":
+            y_input = gamepad_state["axes"][mappings["y_axis"]["index"]]
+        if input_method == "gamepad" and mappings["y_axis"]["inverted"]:
+            y_input *= -1
+        move_vec += forward_vec * y_input * sensitivity
+        
+        # X-axis movement (Left/Right)
+        x_input = 0
+        if input_method == "gamepad":
+            x_input = gamepad_state["axes"][mappings["x_axis"]["index"]]
+        if input_method == "gamepad" and mappings["x_axis"]["inverted"]:
+            x_input *= -1
+        move_vec += right_vec * x_input * sensitivity
+        
+        # Z-axis movement (Up/Down)
+        z_input = 0
+        if input_method == "gamepad":
+            z_input = gamepad_state["axes"][mappings["z_axis"]["index"]]
+        if input_method == "gamepad" and mappings["z_axis"]["inverted"]:
+            z_input *= -1
+        # Use world Z-axis for up/down movement to be intuitive
+        move_vec[2] += z_input * sensitivity
 
-            # Apply mapping
-            # action[0] is x-axis (A/D, Left Stick X)
-            action[0] = axes[0] * action_scale
-            # action[1] is y-axis (W/S, Left Stick Y)
-            action[1] = axes[1] * y_inversion * action_scale
-            # action[2] is z-axis (Q/E, Right Stick Y)
-            action[2] = axes[3] * z_inversion * action_scale
+        action[:3] = move_vec
 
-        # Gripper control from bumpers
-        # 0.0=close, 1.0=hold, 2.0=open -> mapped from buttons
-        if len(buttons) >= 6:
-            right_bumper = buttons[5]
-            left_bumper = buttons[4]
+        # Gripper control
+        open_button = 0
+        if input_method == "gamepad":
+            open_button = gamepad_state["buttons"][mappings["gripper_open"]["index"]]
+        close_button = 0
+        if input_method == "gamepad":
+            close_button = gamepad_state["buttons"][mappings["gripper_close"]["index"]]
 
-            if right_bumper > 0.5:
-                action[6] = 2.0  # Open gripper
-            elif left_bumper > 0.5:
-                action[6] = 0.0  # Close gripper
-            else:
-                action[6] = 1.0  # Hold position
+        if open_button > 0.5:
+            action[6] = 2.0  # Open
+        elif close_button > 0.5:
+            action[6] = 0.0  # Close
         else:
-            action[6] = 1.0 # Default hold
+            action[6] = 1.0  # Hold
+
+        return action
+
+
+    def _keyboard_state_to_action(self, keyboard_state: Dict[str, Any]) -> np.ndarray:
+        """Translate a keyboard state dictionary into a 7D action vector."""
+        action = np.zeros(7, dtype=np.float32)
+
+        if "axes" not in keyboard_state or "buttons" not in keyboard_state:
+            return action
+
+        config = self.control_config["configurations"]["default_panda_pick"]
+        sensitivity = keyboard_state.get("sensitivity", config["sensitivity"]["keyboard"])
+
+        # Get camera matrix for camera-relative control
+        cam_id = self._model.camera("front").id
+        cam_mat = self._data.cam_xmat[cam_id].reshape(3, 3)
+        
+        forward_vec = -cam_mat[:, 2]
+        up_vec = cam_mat[:, 1]
+        right_vec = cam_mat[:, 0]
+
+        move_vec = np.zeros(3)
+        
+        # Y-axis movement (Forward/Backward)
+        y_input = keyboard_state["axes"][1]
+        move_vec += forward_vec * y_input * sensitivity
+        
+        # X-axis movement (Left/Right)
+        x_input = keyboard_state["axes"][0]
+        move_vec += right_vec * x_input * sensitivity
+        
+        # Z-axis movement (Up/Down)
+        z_input = keyboard_state["axes"][3]
+        move_vec[2] += z_input * sensitivity
+
+        action[:3] = move_vec
+
+        # Gripper control
+        open_button = keyboard_state["buttons"][5]
+        close_button = keyboard_state["buttons"][4]
+
+        if open_button > 0.5:
+            action[6] = 2.0  # Open
+        elif close_button > 0.5:
+            action[6] = 0.0  # Close
+        else:
+            action[6] = 1.0  # Hold
 
         return action
 
