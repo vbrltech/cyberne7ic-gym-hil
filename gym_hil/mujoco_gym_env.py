@@ -114,24 +114,21 @@ class MujocoGymEnv(gym.Env):
         return self._random
 
 
-class FrankaGymEnv(MujocoGymEnv):
-    """Base class for Franka Panda robot environments."""
+class MujocoRobotEnv(MujocoGymEnv):
+    """Base class for Mujoco robot environments."""
 
     def __init__(
         self,
-        xml_path: Path | None = None,
+        xml_path: Path,
         seed: int = 0,
         control_dt: float = 0.02,
         physics_dt: float = 0.002,
         render_spec: GymRenderingSpec = GymRenderingSpec(),  # noqa: B008
         render_mode: Literal["rgb_array", "human"] = "rgb_array",
         image_obs: bool = False,
-        home_position: np.ndarray = np.asarray((0, -0.785, 0, -2.35, 0, 1.57, np.pi / 4)),  # noqa: B008
-        cartesian_bounds: np.ndarray = np.asarray([[0.2, -0.3, 0], [0.6, 0.3, 0.5]]),  # noqa: B008
+        home_position: np.ndarray = np.zeros(7),
+        cartesian_bounds: np.ndarray = np.asarray([[-1, -1, -1], [1, 1, 1]]),
     ):
-        if xml_path is None:
-            xml_path = Path(__file__).parent.parent / "gym_hil" / "assets" / "scene.xml"
-
         super().__init__(
             xml_path=xml_path,
             seed=seed,
@@ -158,12 +155,6 @@ class FrankaGymEnv(MujocoGymEnv):
         camera_id_2 = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name_2)
         self.camera_id = (camera_id_1, camera_id_2)
 
-        # Cache robot IDs
-        self._panda_dof_ids = np.asarray([self._model.joint(f"joint{i}").id for i in range(1, 8)])
-        self._panda_ctrl_ids = np.asarray([self._model.actuator(f"actuator{i}").id for i in range(1, 8)])
-        self._gripper_ctrl_id = self._model.actuator("fingers_actuator").id
-        self._pinch_site_id = self._model.site("pinch").id
-
         # Setup observation and action spaces
         self._setup_observation_space()
         self._setup_action_space()
@@ -171,6 +162,89 @@ class FrankaGymEnv(MujocoGymEnv):
         # Initialize renderer
         self._viewer = mujoco.Renderer(self.model, height=render_spec.height, width=render_spec.width)
         self._viewer.render()
+
+    def _setup_observation_space(self):
+        raise NotImplementedError
+
+    def _setup_action_space(self):
+        raise NotImplementedError
+
+    def reset_robot(self):
+        raise NotImplementedError
+
+    def apply_action(self, action):
+        raise NotImplementedError
+
+    def get_robot_state(self):
+        raise NotImplementedError
+
+    def get_gripper_pose(self):
+        raise NotImplementedError
+
+    def render(self):
+        """Render the environment and return dual camera views as expected by the backend."""
+        # Render from both cameras
+        frames = []
+        
+        # First camera (front view)
+        self._viewer.update_scene(self.data, camera=self.camera_id[0])
+        frame1 = self._viewer.render()
+        # Ensure it's a numpy array
+        if not isinstance(frame1, np.ndarray):
+            frame1 = np.array(frame1)
+        frames.append(frame1)
+        
+        # Second camera (handcam/wrist view) - fallback to front view if handcam doesn't exist
+        if self.camera_id[1] != -1:  # Valid camera ID
+            self._viewer.update_scene(self.data, camera=self.camera_id[1])
+            frame2 = self._viewer.render()
+            # Ensure it's a numpy array
+            if not isinstance(frame2, np.ndarray):
+                frame2 = np.array(frame2)
+            frames.append(frame2)
+        else:
+            # If second camera doesn't exist, duplicate the first camera view
+            frames.append(frame1.copy())
+        
+        # Convert frames list to numpy array to satisfy Gymnasium requirements
+        return np.array(frames)
+
+
+class PandaGymEnv(MujocoRobotEnv):
+    """Franka Panda robot environment."""
+
+    def __init__(
+        self,
+        xml_path: Path | None = None,
+        seed: int = 0,
+        control_dt: float = 0.02,
+        physics_dt: float = 0.002,
+        render_spec: GymRenderingSpec = GymRenderingSpec(),  # noqa: B008
+        render_mode: Literal["rgb_array", "human"] = "rgb_array",
+        image_obs: bool = False,
+        home_position: np.ndarray = np.asarray((0, -0.785, 0, -2.35, 0, 1.57, np.pi / 4)),  # noqa: B008
+        cartesian_bounds: np.ndarray = np.asarray([[0.2, -0.3, 0], [0.6, 0.3, 0.5]]),  # noqa: B008
+    ):
+        if xml_path is None:
+            xml_path = Path(__file__).parent.parent / "assets" / "scene.xml"
+
+        super().__init__(
+            xml_path=xml_path,
+            seed=seed,
+            control_dt=control_dt,
+            physics_dt=physics_dt,
+            render_spec=render_spec,
+            render_mode=render_mode,
+            image_obs=image_obs,
+            home_position=home_position,
+            cartesian_bounds=cartesian_bounds,
+        )
+
+        # Cache robot IDs
+        self._panda_dof_ids = np.asarray([self._model.joint(f"joint{i}").id for i in range(1, 8)])
+        self._panda_ctrl_ids = np.asarray([self._model.actuator(f"actuator{i}").id for i in range(1, 8)])
+        self._gripper_ctrl_id = self._model.actuator("fingers_actuator").id
+        self._pinch_site_id = self._model.site("pinch").id
 
     def _setup_observation_space(self):
         """Setup the observation space for the Franka environment."""
@@ -279,14 +353,6 @@ class FrankaGymEnv(MujocoGymEnv):
         gripper_pose = self.get_gripper_pose()
 
         return np.concatenate([qpos, qvel, gripper_pose, tcp_pos])
-
-    def render(self):
-        """Render the environment and return frames from multiple cameras."""
-        rendered_frames = []
-        for cam_id in self.camera_id:
-            self._viewer.update_scene(self.data, camera=cam_id)
-            rendered_frames.append(self._viewer.render())
-        return rendered_frames
 
     def get_gripper_pose(self):
         """Get the current pose of the gripper."""

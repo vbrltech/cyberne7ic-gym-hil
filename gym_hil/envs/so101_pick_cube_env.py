@@ -1,19 +1,5 @@
 #!/usr/bin/env python
 
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import json
 from pathlib import Path
 from typing import Any, Dict, Literal, Tuple
@@ -22,15 +8,16 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 
-from gym_hil.mujoco_gym_env import PandaGymEnv, GymRenderingSpec
+from gym_hil.controllers import opspace
+from gym_hil.mujoco_gym_env import MujocoRobotEnv, GymRenderingSpec
 
-_PANDA_HOME = np.asarray((0, 0.195, 0, -2.43, 0, 2.62, 0.785))
+_SO101_HOME = np.asarray((0, 0, 0, 0, 0, 0))
 _CARTESIAN_BOUNDS = np.asarray([[0.2, -0.3, 0], [0.6, 0.3, 0.5]])
 _SAMPLING_BOUNDS = np.asarray([[0.3, -0.15], [0.5, 0.15]])
 
 
-class PandaPickCubeGymEnv(PandaGymEnv):
-    """Environment for a Panda robot picking up a cube."""
+class SO101PickCubeGymEnv(MujocoRobotEnv):
+    """Environment for a SO-101 robot picking up a cube."""
 
     def __init__(
         self,
@@ -42,6 +29,7 @@ class PandaPickCubeGymEnv(PandaGymEnv):
         image_obs: bool = False,
         reward_type: str = "sparse",
         random_block_position: bool = False,
+        use_viewer: bool = False,
     ):
         self.reward_type = reward_type
 
@@ -50,22 +38,27 @@ class PandaPickCubeGymEnv(PandaGymEnv):
         with open(config_path) as f:
             self.control_config = json.load(f)
 
-        xml_path = Path(__file__).parent.parent / "assets" / "scene.xml"
         super().__init__(
-            xml_path=xml_path,
+            xml_path=Path(__file__).parent.parent / "assets" / "so101_pick_cube.xml",
             seed=seed,
             control_dt=control_dt,
             physics_dt=physics_dt,
             render_spec=render_spec,
             render_mode=render_mode,
             image_obs=image_obs,
-            home_position=_PANDA_HOME,
+            home_position=_SO101_HOME,
             cartesian_bounds=_CARTESIAN_BOUNDS,
         )
 
         # Task-specific setup
         self._block_z = self._model.geom("block").size[2]
         self._random_block_position = random_block_position
+
+        # Cache robot IDs
+        self._so101_dof_ids = np.asarray([self._model.joint(name).id for name in ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]])
+        self._so101_ctrl_ids = np.asarray([self._model.actuator(name).id for name in ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]])
+        self._gripper_ctrl_id = self._model.actuator("gripper").id
+        self._pinch_site_id = self._model.site("gripperframe").id
 
         # Setup observation space properly to match what _compute_observation returns
         # Observation space design:
@@ -74,6 +67,7 @@ class PandaPickCubeGymEnv(PandaGymEnv):
         #   - "pixels": (optional) dict of camera views if image observations are enabled
 
         self._setup_observation_space()
+        self._setup_action_space()
 
     def reset(self, seed=None, **kwargs) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
         """Reset the environment."""
@@ -135,14 +129,8 @@ class PandaPickCubeGymEnv(PandaGymEnv):
 
     def _compute_observation(self) -> dict:
         """Compute the current observation."""
-        # Create the dictionary structure that matches our observation space
-        observation = {}
-
-        # Get robot state
+        # Get robot state as a dictionary
         robot_state_dict = self.get_robot_state()
-
-        # Assemble observation respecting the newly defined observation_space
-        block_pos = self._data.sensor("block_pos").data.astype(np.float32)
 
         if self.image_obs:
             # Image observations - render() now returns dual camera views as numpy array
@@ -155,8 +143,8 @@ class PandaPickCubeGymEnv(PandaGymEnv):
             }
         else:
             # State-only observations
-            block_pos = self._data.sensor("block_pos").data.astype(np.float32)
-            block_quat = self._data.sensor("block_quat").data.astype(np.float32)
+            block_pos = self._data.sensor("block_pos").data.astype(np.float64)
+            block_quat = self._data.sensor("block_quat").data.astype(np.float64)
             environment_state = np.concatenate([block_pos, block_quat])
 
             observation = {
@@ -171,7 +159,7 @@ class PandaPickCubeGymEnv(PandaGymEnv):
         block_pos = self._data.sensor("block_pos").data
 
         if self.reward_type == "dense":
-            tcp_pos = self._data.sensor("2f85/pinch_pos").data
+            tcp_pos = self._data.sensor("gripperframe").data
             dist = np.linalg.norm(block_pos - tcp_pos)
             r_close = np.exp(-20 * dist)
             r_lift = (block_pos[2] - self._z_init) / (self._z_success - self._z_init)
@@ -184,21 +172,20 @@ class PandaPickCubeGymEnv(PandaGymEnv):
     def _is_success(self) -> bool:
         """Check if the task is successfully completed."""
         block_pos = self._data.sensor("block_pos").data
-        tcp_pos = self._data.sensor("2f85/pinch_pos").data
+        tcp_pos = self._data.sensor("gripperframe").data
         dist = np.linalg.norm(block_pos - tcp_pos)
         lift = block_pos[2] - self._z_init
         return dist < 0.05 and lift > 0.1
 
-
     def _setup_observation_space(self):
-        """Setup the observation space for the Panda environment."""
+        """Setup the observation space for the SO101 environment."""
         agent_pos_space = spaces.Dict(
             {
                 "tcp_pose": spaces.Box(-np.inf, np.inf, shape=(7,), dtype=np.float32),
                 "tcp_vel": spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float32),
                 "gripper_pose": spaces.Box(-1, 1, shape=(1,), dtype=np.float32),
-                "qpos": spaces.Box(-np.inf, np.inf, shape=(7,), dtype=np.float32),
-                "qvel": spaces.Box(-np.inf, np.inf, shape=(7,), dtype=np.float32),
+                "qpos": spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float32),
+                "qvel": spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float32),
             }
         )
 
@@ -232,26 +219,86 @@ class PandaPickCubeGymEnv(PandaGymEnv):
                 }
             )
 
+    def _setup_action_space(self):
+        """Setup the action space for the SO101 environment."""
+        self.action_space = spaces.Box(
+            low=np.asarray([-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0], dtype=np.float32),
+            high=np.asarray([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),
+            dtype=np.float32,
+        )
+
+    def reset_robot(self):
+        """Reset the robot to home position."""
+        self._data.qpos[self._so101_dof_ids] = self._home_position
+        self._data.ctrl[self._so101_ctrl_ids] = 0.0
+        mujoco.mj_forward(self._model, self._data)
+
+        # Reset mocap body to home position
+        tcp_pos = self._data.sensor("gripperframe").data
+        self._data.mocap_pos[0] = tcp_pos
+
+    def apply_action(self, action):
+        """Apply the action to the robot."""
+        if len(action) == 7:
+            x, y, z, rx, ry, rz, grasp_command = action
+        elif len(action) == 4:
+            x, y, z, grasp_command = action
+            rx, ry, rz = 0, 0, 0
+        else:
+            raise ValueError(f"Action length must be 4 or 7, not {len(action)}")
+
+        # Set the mocap position
+        pos = self._data.mocap_pos[0].copy()
+        dpos = np.asarray([x, y, z])
+        npos = np.clip(pos + dpos, *self._cartesian_bounds)
+        self._data.mocap_pos[0] = npos
+
+        # Set gripper grasp
+        # The grasp_command is an absolute state: 0.0 for close, 1.0 for hold, 2.0 for open.
+        if grasp_command == 0.0:  # Close command
+            # The Robotiq gripper controller expects a value from 0 to 255.
+            # We send a high value to close the gripper.
+            self._data.ctrl[self._gripper_ctrl_id] = 255.0
+        elif grasp_command == 2.0:  # Open command
+            self._data.ctrl[self._gripper_ctrl_id] = 0.0
+        # If grasp_command is 1.0 (hold), we do nothing, maintaining the current state.
+
+        # Apply operational space control
+        for _ in range(self._n_substeps):
+            tau = opspace(
+                model=self._model,
+                data=self._data,
+                site_id=self._pinch_site_id,
+                dof_ids=self._so101_dof_ids,
+                pos=self._data.mocap_pos[0],
+                ori=self._data.mocap_quat[0],
+                joint=self._home_position,
+                gravity_comp=True,
+            )
+            self._data.ctrl[self._so101_ctrl_ids] = tau
+            mujoco.mj_step(self._model, self._data)
+
     def get_robot_state(self) -> Dict[str, np.ndarray]:
         """Get the current state of the robot as a dictionary."""
         # Get TCP pose (position and quaternion)
-        tcp_pos = self._data.sensor("2f85/pinch_pos").data.astype(np.float32)
+        tcp_pos = self._data.sensor("gripperframe").data.astype(np.float64)
 
-        # The 'pinch' site doesn't have a quaternion sensor, so we get it from the site's rotation matrix
-        tcp_xmat = self._data.site("pinch").xmat.astype(np.float32)
-        quat = np.empty(4)
+        # The 'gripperframe' site doesn't have a quaternion sensor, so we get it from the site's rotation matrix
+        tcp_xmat = self._data.site("gripperframe").xmat.astype(np.float64)
+        quat = np.empty(4, dtype=np.float64)
         mujoco.mju_mat2Quat(quat, tcp_xmat)
-        tcp_pose = np.concatenate([tcp_pos, quat])
+        tcp_pose = np.concatenate([tcp_pos, quat.astype(np.float64)]).astype(np.float64)
 
         # Get TCP velocity (linear and angular)
-        tcp_vel = self._data.sensor("2f85/pinch_vel").data.astype(np.float32)
+        # These sensors are not defined in the XML, so we use placeholders
+        tcp_vel = np.zeros(6, dtype=np.float64)
 
         # Get gripper pose
-        gripper_pose = np.array([self._data.ctrl[self._gripper_ctrl_id]], dtype=np.float32)
+        gripper_pose = self.get_gripper_pose()
 
         # Get joint state
-        qpos = self.data.qpos[self._panda_dof_ids].astype(np.float32)
-        qvel = self.data.qvel[self._panda_dof_ids].astype(np.float32)
+        qpos = self.data.qpos[self._so101_dof_ids].astype(np.float64)
+        qvel = self.data.qvel[self._so101_dof_ids].astype(np.float64)
 
         return {
             "tcp_pose": tcp_pose,
@@ -261,9 +308,13 @@ class PandaPickCubeGymEnv(PandaGymEnv):
             "qvel": qvel,
         }
 
+    def get_gripper_pose(self):
+        """Get the current pose of the gripper."""
+        return np.array([self._data.ctrl[self._gripper_ctrl_id]], dtype=np.float64)
+
     def _gamepad_state_to_action(self, gamepad_state: Dict[str, Any]) -> np.ndarray:
         """Translate a gamepad state dictionary into a 7D action vector using the loaded configuration."""
-        action = np.zeros(7, dtype=np.float32)
+        action = np.zeros(7, dtype=np.float64)
 
         if "axes" not in gamepad_state or "buttons" not in gamepad_state:
             return action
@@ -274,7 +325,7 @@ class PandaPickCubeGymEnv(PandaGymEnv):
         if input_method == 'switch':
             return action
 
-        config = self.control_config["configurations"]["default_panda_pick"]
+        config = self.control_config["configurations"]["default_so101_pick"]
         mappings = config["mappings"][input_method]
         # Use sensitivity from gamepad_state if available, otherwise use config default
         sensitivity = gamepad_state.get("sensitivity", config["sensitivity"][input_method])
@@ -346,7 +397,7 @@ class PandaPickCubeGymEnv(PandaGymEnv):
         if "axes" not in keyboard_state or "buttons" not in keyboard_state:
             return action
 
-        config = self.control_config["configurations"]["default_panda_pick"]
+        config = self.control_config["configurations"]["default_so101_pick"]
         sensitivity = keyboard_state.get("sensitivity", config["sensitivity"]["keyboard"])
 
         # Get camera matrix for camera-relative control
@@ -390,7 +441,7 @@ class PandaPickCubeGymEnv(PandaGymEnv):
 if __name__ == "__main__":
     from gym_hil import PassiveViewerWrapper
 
-    env = PandaPickCubeGymEnv(render_mode="human")
+    env = SO101PickCubeGymEnv(render_mode="human")
     env = PassiveViewerWrapper(env)
     env.reset()
     for _ in range(100):
