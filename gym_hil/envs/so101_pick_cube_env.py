@@ -133,18 +133,18 @@ class SO101PickCubeGymEnv(MujocoRobotEnv):
         robot_state_dict = self.get_robot_state()
 
         if self.image_obs:
-            # Image observations - render() now returns dual camera views as numpy array
-            rendered_frames = self.render()
-            front_view = rendered_frames[0]
-            wrist_view = rendered_frames[1]
+            # Image observations - render_all_cameras() returns a list of frames.
+            rendered_frames = self.render_all_cameras()
+            front_view = rendered_frames[0] if len(rendered_frames) > 0 else np.zeros((self._render_specs.height, self._render_specs.width, 3), dtype=np.uint8)
+            wrist_view = rendered_frames[1] if len(rendered_frames) > 1 else np.zeros((self._render_specs.height, self._render_specs.width, 3), dtype=np.uint8)
             observation = {
                 "pixels": {"front": front_view, "wrist": wrist_view},
                 "agent_pos": robot_state_dict,
             }
         else:
             # State-only observations
-            block_pos = self._data.sensor("block_pos").data.astype(np.float64)
-            block_quat = self._data.sensor("block_quat").data.astype(np.float64)
+            block_pos = self._data.sensor("block_pos").data.astype(np.float32)
+            block_quat = self._data.sensor("block_quat").data.astype(np.float32)
             environment_state = np.concatenate([block_pos, block_quat])
 
             observation = {
@@ -159,7 +159,7 @@ class SO101PickCubeGymEnv(MujocoRobotEnv):
         block_pos = self._data.sensor("block_pos").data
 
         if self.reward_type == "dense":
-            tcp_pos = self._data.sensor("gripperframe").data
+            tcp_pos = self._data.sensor("gripperframe").data.astype(np.float32)
             dist = np.linalg.norm(block_pos - tcp_pos)
             r_close = np.exp(-20 * dist)
             r_lift = (block_pos[2] - self._z_init) / (self._z_success - self._z_init)
@@ -172,7 +172,7 @@ class SO101PickCubeGymEnv(MujocoRobotEnv):
     def _is_success(self) -> bool:
         """Check if the task is successfully completed."""
         block_pos = self._data.sensor("block_pos").data
-        tcp_pos = self._data.sensor("gripperframe").data
+        tcp_pos = self._data.sensor("gripperframe").data.astype(np.float32)
         dist = np.linalg.norm(block_pos - tcp_pos)
         lift = block_pos[2] - self._z_init
         return dist < 0.05 and lift > 0.1
@@ -281,24 +281,24 @@ class SO101PickCubeGymEnv(MujocoRobotEnv):
     def get_robot_state(self) -> Dict[str, np.ndarray]:
         """Get the current state of the robot as a dictionary."""
         # Get TCP pose (position and quaternion)
-        tcp_pos = self._data.sensor("gripperframe").data.astype(np.float64)
+        tcp_pos = self._data.sensor("gripperframe").data.astype(np.float32)
 
         # The 'gripperframe' site doesn't have a quaternion sensor, so we get it from the site's rotation matrix
-        tcp_xmat = self._data.site("gripperframe").xmat.astype(np.float64)
+        tcp_xmat = self._data.site("gripperframe").xmat
         quat = np.empty(4, dtype=np.float64)
         mujoco.mju_mat2Quat(quat, tcp_xmat)
-        tcp_pose = np.concatenate([tcp_pos, quat.astype(np.float64)]).astype(np.float64)
+        tcp_pose = np.concatenate([tcp_pos, quat.astype(np.float32)]).astype(np.float32)
 
         # Get TCP velocity (linear and angular)
         # These sensors are not defined in the XML, so we use placeholders
-        tcp_vel = np.zeros(6, dtype=np.float64)
+        tcp_vel = np.zeros(6, dtype=np.float32)
 
         # Get gripper pose
         gripper_pose = self.get_gripper_pose()
 
         # Get joint state
-        qpos = self.data.qpos[self._so101_dof_ids].astype(np.float64)
-        qvel = self.data.qvel[self._so101_dof_ids].astype(np.float64)
+        qpos = self.data.qpos[self._so101_dof_ids].astype(np.float32)
+        qvel = self.data.qvel[self._so101_dof_ids].astype(np.float32)
 
         return {
             "tcp_pose": tcp_pose,
@@ -310,11 +310,11 @@ class SO101PickCubeGymEnv(MujocoRobotEnv):
 
     def get_gripper_pose(self):
         """Get the current pose of the gripper."""
-        return np.array([self._data.ctrl[self._gripper_ctrl_id]], dtype=np.float64)
+        return np.array([self._data.ctrl[self._gripper_ctrl_id]], dtype=np.float32)
 
     def _gamepad_state_to_action(self, gamepad_state: Dict[str, Any]) -> np.ndarray:
         """Translate a gamepad state dictionary into a 7D action vector using the loaded configuration."""
-        action = np.zeros(7, dtype=np.float64)
+        action = np.zeros(7, dtype=np.float32)
 
         if "axes" not in gamepad_state or "buttons" not in gamepad_state:
             return action

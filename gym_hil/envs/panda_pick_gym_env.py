@@ -145,10 +145,10 @@ class PandaPickCubeGymEnv(PandaGymEnv):
         block_pos = self._data.sensor("block_pos").data.astype(np.float32)
 
         if self.image_obs:
-            # Image observations - render() now returns dual camera views as numpy array
-            rendered_frames = self.render()
-            front_view = rendered_frames[0]
-            wrist_view = rendered_frames[1]
+            # Image observations - render_all_cameras() returns a list of frames.
+            rendered_frames = self.render_all_cameras()
+            front_view = rendered_frames[0] if len(rendered_frames) > 0 else np.zeros((self._render_specs.height, self._render_specs.width, 3), dtype=np.uint8)
+            wrist_view = rendered_frames[1] if len(rendered_frames) > 1 else np.zeros((self._render_specs.height, self._render_specs.width, 3), dtype=np.uint8)
             observation = {
                 "pixels": {"front": front_view, "wrist": wrist_view},
                 "agent_pos": robot_state_dict,
@@ -171,7 +171,7 @@ class PandaPickCubeGymEnv(PandaGymEnv):
         block_pos = self._data.sensor("block_pos").data
 
         if self.reward_type == "dense":
-            tcp_pos = self._data.sensor("2f85/pinch_pos").data
+            tcp_pos = self._data.sensor("2f85/pinch_pos").data.astype(np.float32)
             dist = np.linalg.norm(block_pos - tcp_pos)
             r_close = np.exp(-20 * dist)
             r_lift = (block_pos[2] - self._z_init) / (self._z_success - self._z_init)
@@ -184,7 +184,7 @@ class PandaPickCubeGymEnv(PandaGymEnv):
     def _is_success(self) -> bool:
         """Check if the task is successfully completed."""
         block_pos = self._data.sensor("block_pos").data
-        tcp_pos = self._data.sensor("2f85/pinch_pos").data
+        tcp_pos = self._data.sensor("2f85/pinch_pos").data.astype(np.float32)
         dist = np.linalg.norm(block_pos - tcp_pos)
         lift = block_pos[2] - self._z_init
         return dist < 0.05 and lift > 0.1
@@ -238,10 +238,10 @@ class PandaPickCubeGymEnv(PandaGymEnv):
         tcp_pos = self._data.sensor("2f85/pinch_pos").data.astype(np.float32)
 
         # The 'pinch' site doesn't have a quaternion sensor, so we get it from the site's rotation matrix
-        tcp_xmat = self._data.site("pinch").xmat.astype(np.float32)
-        quat = np.empty(4)
+        tcp_xmat = self._data.site("pinch").xmat
+        quat = np.empty(4, dtype=np.float64)
         mujoco.mju_mat2Quat(quat, tcp_xmat)
-        tcp_pose = np.concatenate([tcp_pos, quat])
+        tcp_pose = np.concatenate([tcp_pos, quat]).astype(np.float32)
 
         # Get TCP velocity (linear and angular)
         tcp_vel = self._data.sensor("2f85/pinch_vel").data.astype(np.float32)

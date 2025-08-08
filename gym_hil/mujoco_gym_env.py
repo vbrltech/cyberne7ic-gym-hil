@@ -17,6 +17,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
+import hashlib
+import time
+import struct
 
 import gymnasium as gym
 import mujoco
@@ -34,6 +37,19 @@ class GymRenderingSpec:
     width: int = 128
     camera_id: str | int = -1
     mode: Literal["rgb_array", "human"] = "rgb_array"
+
+
+@dataclass
+class RenderCache:
+    """Cache for rendered frames and scene state."""
+    frames: dict = None
+    scene_hash: str = ""
+    last_update_time: float = 0.0
+    cache_ttl: float = 0.016  # 60fps cache timeout (16ms)
+    
+    def __post_init__(self):
+        if self.frames is None:
+            self.frames = {}
 
 
 class MujocoGymEnv(gym.Env):
@@ -57,6 +73,46 @@ class MujocoGymEnv(gym.Env):
         self._random = np.random.RandomState(seed)
         self._viewer: Optional[mujoco.Renderer] = None
         self._render_specs = render_spec
+        
+        # Render caching for performance optimization
+        self._render_cache = RenderCache()
+        self._scene_needs_update = True
+
+    def _compute_scene_hash(self) -> str:
+        """Compute a hash of the current simulation state for caching."""
+        # Use key simulation state components for hashing
+        state_components = [
+            struct.pack('d', self._data.time),  # Convert float to bytes
+            self._data.qpos.tobytes(),
+            self._data.qvel.tobytes(),
+            self._data.ctrl.tobytes(),
+        ]
+        
+        # Include mocap data if available
+        if self._data.mocap_pos is not None and self._data.mocap_pos.size > 0:
+            state_components.append(self._data.mocap_pos.tobytes())
+        if self._data.mocap_quat is not None and self._data.mocap_quat.size > 0:
+            state_components.append(self._data.mocap_quat.tobytes())
+            
+        combined_state = b''.join(state_components)
+        return hashlib.md5(combined_state).hexdigest()
+
+    def _should_update_cache(self) -> bool:
+        """Determine if the render cache should be updated."""
+        current_time = time.time()
+        current_hash = self._compute_scene_hash()
+        
+        # Check if scene state has changed or cache has expired
+        if (current_hash != self._render_cache.scene_hash or
+            current_time - self._render_cache.last_update_time > self._render_cache.cache_ttl):
+            return True
+        return False
+
+    def _update_scene_if_needed(self, camera_id):
+        """Update scene only if necessary for performance optimization."""
+        if self._scene_needs_update or self._should_update_cache():
+            self._viewer.update_scene(self._data, camera=camera_id)
+            self._scene_needs_update = False
 
     def render(self):
         if self._viewer is None:
@@ -65,8 +121,32 @@ class MujocoGymEnv(gym.Env):
                 height=self._render_specs.height,
                 width=self._render_specs.width,
             )
-        self._viewer.update_scene(self._data, camera=self._render_specs.camera_id)
-        return self._viewer.render()
+            
+        camera_id = self._render_specs.camera_id
+        current_hash = self._compute_scene_hash()
+        
+        # Check cache first
+        if (current_hash == self._render_cache.scene_hash and
+            camera_id in self._render_cache.frames):
+            return self._render_cache.frames[camera_id]
+        
+        # Update scene only if needed
+        self._update_scene_if_needed(camera_id)
+        frame = self._viewer.render()
+        
+        # Update cache
+        if self._should_update_cache():
+            self._render_cache.scene_hash = current_hash
+            self._render_cache.last_update_time = time.time()
+            self._render_cache.frames = {camera_id: frame}
+        
+        return frame
+
+    def invalidate_render_cache(self):
+        """Invalidate the render cache to force re-rendering."""
+        self._render_cache.scene_hash = ""
+        self._render_cache.frames.clear()
+        self._scene_needs_update = True
 
     def close(self) -> None:
         """Release graphics resources if they exist.
@@ -162,6 +242,9 @@ class MujocoRobotEnv(MujocoGymEnv):
         # Initialize renderer
         self._viewer = mujoco.Renderer(self.model, height=render_spec.height, width=render_spec.width)
         self._viewer.render()
+        
+        # Initialize multi-camera render cache
+        self._multi_camera_cache = RenderCache()
 
     def _setup_observation_space(self):
         raise NotImplementedError
@@ -181,33 +264,78 @@ class MujocoRobotEnv(MujocoGymEnv):
     def get_gripper_pose(self):
         raise NotImplementedError
 
-    def render(self):
-        """Render the environment and return dual camera views as expected by the backend."""
-        # Render from both cameras
+    def render(self) -> np.ndarray:
+        """Renders the environment from the default camera for gymnasium compatibility."""
+        camera_id_to_render = self.camera_id[0]
+        current_hash = self._compute_scene_hash()
+        
+        # Check single camera cache
+        cache_key = f"single_{camera_id_to_render}"
+        if (current_hash == self._render_cache.scene_hash and
+            cache_key in self._render_cache.frames):
+            return self._render_cache.frames[cache_key]
+        
+        # Update scene and render
+        self._update_scene_if_needed(camera_id_to_render)
+        frame = self._viewer.render()
+        if not isinstance(frame, np.ndarray):
+            frame = np.array(frame)
+        
+        # Update cache
+        if self._should_update_cache():
+            self._render_cache.scene_hash = current_hash
+            self._render_cache.last_update_time = time.time()
+            self._render_cache.frames[cache_key] = frame
+        
+        return frame
+
+    def render_all_cameras(self) -> list[np.ndarray]:
+        """Renders the environment from all available cameras with optimized caching."""
+        current_hash = self._compute_scene_hash()
+        cache_key = "all_cameras"
+        
+        # Check multi-camera cache
+        if (current_hash == self._multi_camera_cache.scene_hash and
+            cache_key in self._multi_camera_cache.frames):
+            return self._multi_camera_cache.frames[cache_key]
+        
+        # Render all cameras with single scene update
         frames = []
+        scene_updated = False
         
-        # First camera (front view)
-        self._viewer.update_scene(self.data, camera=self.camera_id[0])
-        frame1 = self._viewer.render()
-        # Ensure it's a numpy array
-        if not isinstance(frame1, np.ndarray):
-            frame1 = np.array(frame1)
-        frames.append(frame1)
+        for i, camera_id in enumerate(self.camera_id):
+            # Only update scene once for all cameras
+            if not scene_updated:
+                self._update_scene_if_needed(camera_id)
+                scene_updated = True
+            else:
+                # Just switch camera without full scene update
+                self._viewer.update_scene(self.data, camera=camera_id)
+            
+            frame = self._viewer.render()
+            if not isinstance(frame, np.ndarray):
+                frame = np.array(frame)
+            frames.append(frame)
         
-        # Second camera (handcam/wrist view) - fallback to front view if handcam doesn't exist
-        if self.camera_id[1] != -1:  # Valid camera ID
-            self._viewer.update_scene(self.data, camera=self.camera_id[1])
-            frame2 = self._viewer.render()
-            # Ensure it's a numpy array
-            if not isinstance(frame2, np.ndarray):
-                frame2 = np.array(frame2)
-            frames.append(frame2)
-        else:
-            # If second camera doesn't exist, duplicate the first camera view
-            frames.append(frame1.copy())
+        # Update multi-camera cache
+        if self._should_update_cache():
+            self._multi_camera_cache.scene_hash = current_hash
+            self._multi_camera_cache.last_update_time = time.time()
+            self._multi_camera_cache.frames[cache_key] = frames
         
-        # Convert frames list to numpy array to satisfy Gymnasium requirements
-        return np.array(frames)
+        return frames
+
+    def step(self, action):
+        """Override step to invalidate cache when simulation state changes."""
+        result = super().step(action) if hasattr(super(), 'step') else None
+        self.invalidate_render_cache()
+        return result
+
+    def reset(self, **kwargs):
+        """Override reset to invalidate cache when environment resets."""
+        result = super().reset(**kwargs) if hasattr(super(), 'reset') else None
+        self.invalidate_render_cache()
+        return result
 
 
 class PandaGymEnv(MujocoRobotEnv):
@@ -341,6 +469,9 @@ class PandaGymEnv(MujocoRobotEnv):
             )
             self._data.ctrl[self._panda_ctrl_ids] = tau
             mujoco.mj_step(self._model, self._data)
+        
+        # Invalidate render cache after physics step
+        self.invalidate_render_cache()
 
     def get_robot_state(self):
         """Get the current state of the robot."""
