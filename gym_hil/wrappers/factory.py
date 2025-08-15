@@ -6,6 +6,7 @@ import gymnasium as gym
 
 from gym_hil.envs.panda_arrange_boxes_gym_env import PandaArrangeBoxesGymEnv
 from gym_hil.envs.panda_pick_gym_env import PandaPickCubeGymEnv
+from gym_hil.envs.so101_pick_cube_env import SO101PickCubeGymEnv
 from gym_hil.wrappers.viewer_wrapper import PassiveViewerWrapper
 
 
@@ -88,6 +89,8 @@ def make_env(
         env = PandaPickCubeGymEnv(**kwargs)
     elif env_id == "gym_hil/PandaArrangeBoxesBase-v0":
         env = PandaArrangeBoxesGymEnv(**kwargs)
+    elif env_id == "gym_hil/SO101PickCubeBase-v0":
+        env = SO101PickCubeGymEnv(**kwargs)
     else:
         raise ValueError(f"Environment ID {env_id} not supported")
 

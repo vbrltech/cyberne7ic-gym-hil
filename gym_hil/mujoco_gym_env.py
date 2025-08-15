@@ -228,11 +228,22 @@ class MujocoRobotEnv(MujocoGymEnv):
         self.render_mode = render_mode
         self.image_obs = image_obs
 
-        # Setup cameras
+        # Setup cameras - with fallback for missing cameras
         camera_name_1 = "front"
         camera_name_2 = "handcam_rgb"
-        camera_id_1 = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name_1)
-        camera_id_2 = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name_2)
+        
+        try:
+            camera_id_1 = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name_1)
+        except Exception as e:
+            print(f"Warning: Camera '{camera_name_1}' not found, using default camera")
+            camera_id_1 = -1  # Default camera
+            
+        try:
+            camera_id_2 = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name_2)
+        except Exception as e:
+            print(f"Warning: Camera '{camera_name_2}' not found, using same as primary camera")
+            camera_id_2 = camera_id_1  # Use same camera as fallback
+            
         self.camera_id = (camera_id_1, camera_id_2)
 
         # Setup observation and action spaces
@@ -304,18 +315,24 @@ class MujocoRobotEnv(MujocoGymEnv):
         scene_updated = False
         
         for i, camera_id in enumerate(self.camera_id):
-            # Only update scene once for all cameras
-            if not scene_updated:
-                self._update_scene_if_needed(camera_id)
-                scene_updated = True
-            else:
-                # Just switch camera without full scene update
-                self._viewer.update_scene(self.data, camera=camera_id)
-            
-            frame = self._viewer.render()
-            if not isinstance(frame, np.ndarray):
-                frame = np.array(frame)
-            frames.append(frame)
+            try:
+                # Only update scene once for all cameras
+                if not scene_updated:
+                    self._update_scene_if_needed(camera_id)
+                    scene_updated = True
+                else:
+                    # Just switch camera without full scene update
+                    self._viewer.update_scene(self.data, camera=camera_id)
+                
+                frame = self._viewer.render()
+                if not isinstance(frame, np.ndarray):
+                    frame = np.array(frame)
+                frames.append(frame)
+            except Exception as e:
+                print(f"Warning: Failed to render camera {i} (id={camera_id}): {e}")
+                # Create a black frame as fallback
+                fallback_frame = np.zeros((self._render_specs.height, self._render_specs.width, 3), dtype=np.uint8)
+                frames.append(fallback_frame)
         
         # Update multi-camera cache
         if self._should_update_cache():
