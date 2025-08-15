@@ -7,14 +7,14 @@ import mujoco
 import numpy as np
 from gymnasium import spaces
 
-from gym_hil.mujoco_gym_env import FrankaGymEnv, GymRenderingSpec
+from gym_hil.mujoco_gym_env import PandaGymEnv, GymRenderingSpec
 
 _PANDA_HOME = np.asarray((0, -0.785, 0, -2.35, 0, 1.57, np.pi / 4))
 _CARTESIAN_BOUNDS = np.asarray([[0.2, -0.5, 0], [0.6, 0.5, 0.5]])
 _SAMPLING_BOUNDS = np.asarray([[0.3, -0.15], [0.5, 0.15]])
 
 
-class PandaArrangeBoxesGymEnv(FrankaGymEnv):
+class PandaArrangeBoxesGymEnv(PandaGymEnv):
     """Environment for a Panda robot picking up a cube."""
 
     def __init__(

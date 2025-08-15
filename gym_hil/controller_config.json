@@ -32,6 +32,38 @@
           "exit": { "key": "KeyF" }
         }
       }
+    },
+    "default_so101_pick": {
+      "name": "Default SO-101 Picking",
+      "description": "Standard camera-relative controls for the SO-101 pick-and-place task.",
+      "sensitivity": {
+        "gamepad": 0.05,
+        "keyboard": 0.08
+      },
+      "camera_relative": true,
+      "mappings": {
+        "gamepad": {
+          "x_axis": { "input": "axis", "index": 0, "inverted": false },
+          "y_axis": { "input": "axis", "index": 1, "inverted": true },
+          "z_axis": { "input": "axis", "index": 3, "inverted": true },
+          "gripper_open": { "input": "button", "index": 5 },
+          "gripper_close": { "input": "button", "index": 4 }
+        },
+        "keyboard": {
+          "x_axis_pos": { "key": "KeyD" },
+          "x_axis_neg": { "key": "KeyA" },
+          "y_axis_pos": { "key": "KeyW" },
+          "y_axis_neg": { "key": "KeyS" },
+          "z_axis_pos": { "key": "KeyQ" },
+          "z_axis_neg": { "key": "KeyE" },
+          "gripper_open": { "key": "Space" },
+          "gripper_close": { "key": "ShiftLeft" },
+          "success": { "key": "Enter" },
+          "fail": { "key": "Escape" },
+          "freeze": { "key": "Tab" },
+          "exit": { "key": "KeyF" }
+        }
+      }
     }
   }
 }
